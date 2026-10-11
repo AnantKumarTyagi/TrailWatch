@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrailWatch — Hiker Safety Dispatch</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-stone-900 text-stone-100 min-h-screen flex flex-col items-center p-4">
+  <main class="w-full max-w-md bg-stone-800 rounded-2xl shadow-xl border border-stone-700 p-6 my-auto">
+    <header class="border-b border-stone-700 pb-4 mb-6">
+      <div class="flex items-center justify-between">
+        <h1 class="text-xl font-bold tracking-tight text-emerald-400">🌲 TrailWatch</h1>
+        <span id="connection-status" class="text-xs px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800">
+          Online
+        </span>
+      </div>
+      <p class="text-xs text-stone-400 mt-1">Durable wilderness check-in engine</p>
+    </header>
+
+    <section id="setup-view">
+      <form id="hike-form" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold uppercase text-stone-400 mb-1">Hiker Name</label>
+          <input required id="hikerName" type="text" placeholder="e.g. Alex Miller" class="w-full bg-stone-900 border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-stone-400 mb-1">Planned Route</label>
+          <input required id="trailName" type="text" placeholder="e.g. Ridge Crest Trail (South)" class="w-full bg-stone-900 border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-stone-400 mb-1">Safety Window (Minutes)</label>
+          <input required id="duration" type="number" min="1" value="60" class="w-full bg-stone-900 border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-stone-400 mb-1">Emergency Contact Email</label>
+          <input required id="contactEmail" type="email" placeholder="contact@emergency.org" class="w-full bg-stone-900 border border-stone-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500" />
+        </div>
+        <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-stone-950 font-semibold rounded-lg shadow-lg transition duration-150">
+          Start Trail Watch
+        </button>
+      </form>
+    </section>
+
+    <section id="active-view" class="hidden space-y-6">
+      <div class="bg-stone-900 p-4 rounded-xl border border-stone-700">
+        <div class="text-xs text-stone-400 uppercase tracking-wider mb-1">Active Session</div>
+        <div id="session-trail" class="font-bold text-lg text-stone-200">Trail Name</div>
+        <div id="session-id" class="text-xs font-mono text-stone-500 truncate mt-1">ID: ...</div>
+      </div>
+
+      <div class="bg-stone-900 p-4 rounded-xl border border-stone-700 space-y-2">
+        <div class="flex justify-between items-center text-xs">
+          <span class="text-stone-400">Cached Offline Pings:</span>
+          <span id="queue-count" class="font-mono text-emerald-400">0</span>
+        </div>
+        <div class="flex justify-between items-center text-xs">
+          <span class="text-stone-400">Last Synced GPS:</span>
+          <span id="last-gps" class="font-mono text-stone-300">Searching...</span>
+        </div>
+      </div>
+
+      <button id="safe-btn" class="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold rounded-xl text-lg shadow-xl transition">
+        ✓ I'm Safe (Conclude Watch)
+      </button>
+    </section>
+  </main>
+
+  <script>
+    let currentWorkflowId = localStorage.getItem('tw_wf_id');
+    let offlineQueue = JSON.parse(localStorage.getItem('tw_gps_queue') || '[]');
+
+    const setupView = document.getElementById('setup-view');
+    const activeView = document.getElementById('active-view');
+    const queueCountEl = document.getElementById('queue-count');
+    const lastGpsEl = document.getElementById('last-gps');
+    const statusEl = document.getElementById('connection-status');
+
+    function updateOnlineStatus() {
+      if (navigator.onLine) {
+        statusEl.textContent = 'Online';
+        statusEl.className = 'text-xs px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800';
+        flushOfflineQueue();
+      } else {
+        statusEl.textContent = 'Offline (Buffering)';
+        statusEl.className = 'text-xs px-2.5 py-1 rounded-full bg-amber-950 text-amber-400 border border-amber-800';
+      }
+    }
+
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+
+    if (currentWorkflowId) {
+      showActiveView();
+    }
+
+    function showActiveView() {
+      setupView.classList.add('hidden');
+      activeView.classList.remove('hidden');
+      document.getElementById('session-id').textContent = currentWorkflowId;
+      document.getElementById('session-trail').textContent = localStorage.getItem('tw_trail') || 'Trail Watch Running';
+      startLocationTracking();
+    }
+
+    document.getElementById('hike-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        hikerName: document.getElementById('hikerName').value,
+        trailName: document.getElementById('trailName').value,
+        durationMinutes: document.getElementById('duration').value,
+        contactEmail: document.getElementById('contactEmail').value,
+      };
+
+      try {
+        const res = await fetch('/api/hike/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          currentWorkflowId = data.workflowId;
+          localStorage.setItem('tw_wf_id', currentWorkflowId);
+          localStorage.setItem('tw_trail', payload.trailName);
+          showActiveView();
+        }
+      } catch (err) {
+        alert('Could not start session. Verify server connectivity.');
+      }
+    });
+
+    document.getElementById('safe-btn').addEventListener('click', async () => {
+  if (!currentWorkflowId) return;
+
+  try {
+    const res = await fetch('/api/hike/safe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workflowId: currentWorkflowId })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      localStorage.removeItem('tw_wf_id');
+      localStorage.removeItem('tw_trail');
+      localStorage.removeItem('tw_gps_queue');
+      alert('Safety check-in acknowledged! If an overdue alert was previously sent, an "All Clear / Safe" email has now been dispatched to your emergency contact.');
+      location.reload();
+    }
+  } catch (err) {
+    alert('Network error. Reconnect to signal and tap "I\'m Safe" again to send the stand-down notification.');
+  }
+});
+
+    function startLocationTracking() {
+      if (!navigator.geolocation) return;
+      navigator.geolocation.watchPosition((pos) => {
+        const ping = {
+          lat: pos.coords.latitude.toFixed(5),
+          lng: pos.coords.longitude.toFixed(5),
+          accuracy: pos.coords.accuracy,
+          timestamp: new Date().toISOString()
+        };
+        lastGpsEl.textContent = `${ping.lat}, ${ping.lng}`;
+        pushGpsPing(ping);
+      }, null, { enableHighAccuracy: true });
+    }
+
+    function pushGpsPing(ping) {
+      offlineQueue.push(ping);
+      localStorage.setItem('tw_gps_queue', JSON.stringify(offlineQueue));
+      queueCountEl.textContent = offlineQueue.length;
+      flushOfflineQueue();
+    }
+
+    async function flushOfflineQueue() {
+      if (!navigator.onLine || !currentWorkflowId || offlineQueue.length === 0) return;
+      const pingToSend = offlineQueue[offlineQueue.length - 1]; // Send freshest fix
+
+      try {
+        const res = await fetch('/api/hike/ping', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workflowId: currentWorkflowId, ...pingToSend })
+        });
+        if (res.ok) {
+          offlineQueue = [];
+          localStorage.removeItem('tw_gps_queue');
+          queueCountEl.textContent = '0 (Synced)';
+        }
+      } catch (e) {
+      }
+    }
+  </script>
+</body>
+</html>
